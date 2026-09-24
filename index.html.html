@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Rocket Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050510;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            text-align: center;
+            color: #00ffff;
+            font-size: 28px;
+            font-weight: bold;
+            text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff;
+            pointer-events: none;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 10px;
+            width: 100%;
+            text-align: center;
+            color: #ff00ff;
+            font-size: 14px;
+            text-shadow: 0 0 5px #ff00ff;
+            pointer-events: none;
+        }
+        #goal-announcement {
+            position: absolute;
+            top: 40%;
+            width: 100%;
+            text-align: center;
+            color: #ffff00;
+            font-size: 50px;
+            font-weight: bold;
+            text-shadow: 0 0 20px #ffff00;
+            display: none;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">ROJO <span id="score-red">0</span> - <span id="score-blue">0</span> AZUL</div>
+    <div id="goal-announcement">¡GOL!</div>
+    <div id="instructions">Rojo: WASD + Espacio (Salto) + Shift (Boost) | Azul: Flechas + NumPad0 (Salto) + Enter (Boost)</div>
+
+    <!-- Importar Three.js desde CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // Escena, Cámara y Renderizador
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x020208);
+        scene.fog = new THREE.FogExp2(0x020208, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 30, 45);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Iluminación de Neón
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+
+        const cyanLight = new THREE.PointLight(0x00ffff, 2, 100);
+        cyanLight.position.set(0, 20, 0);
+        scene.add(cyanLight);
+
+        // Suelo Estilo Grid de Neón
+        const gridHelper = new THREE.GridHelper(100, 50, 0xff00ff, 0x00ffff);
+        gridHelper.position.y = -0.1;
+        scene.add(gridHelper);
+
+        // Paredes y Arcos
+        const wallMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true });
+        
+        // Campo de juego límites
+        const fieldWidth = 40;
+        const fieldHeight = 25;
+
+        // Creación de Arcos
+        const goalGeometry = new THREE.BoxGeometry(8, 5, 2);
+        const redGoalMat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true });
+        const blueGoalMat = new THREE.MeshBasicMaterial({ color: 0x0000ff, wireframe: true });
+
+        const redGoal = new THREE.Mesh(goalGeometry, redGoalMat);
+        redGoal.position.set(0, 2.5, -fieldHeight);
+        scene.add(redGoal);
+
+        const blueGoal = new THREE.Mesh(goalGeometry, blueGoalMat);
+        blueGoal.position.set(0, 2.5, fieldHeight);
+        scene.add(blueGoal);
+
+        // Balón de Neón
+        const ballGeo = new THREE.SphereGeometry(1.2, 32, 32);
+        const ballMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+        const ball = new THREE.Mesh(ballGeo, ballMat);
+        ball.position.set(0, 1.2, 0);
+        scene.add(ball);
+
+        let ballVel = new THREE.Vector3(0, 0, 0);
+
+        // Creación de Carros
+        function createCar(color) {
+            const carGroup = new THREE.Group();
+            
+            // Cuerpo principal
+            const bodyGeo = new THREE.BoxGeometry(2, 0.8, 4);
+            const bodyMat = new THREE.MeshBasicMaterial({ color: color, wireframe: false });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 0.6;
+            carGroup.add(body);
+
+            // Cabina de neón
+            const cabinGeo = new THREE.BoxGeometry(1.4, 0.6, 2);
+            const cabinMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true });
+            const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+            cabin.position.set(0, 1.2, -0.2);
+            carGroup.add(cabin);
+
+            carGroup.userData = {
+                velocity: new THREE.Vector3(),
+                speed: 0.3,
+                rotationSpeed: 0.05,
+                isJumping: false,
+                jumpForce: 0,
+                boost: 100,
+                abilityTimer: 0,
+                currentAbility: 'normal'
+            };
+
+            scene.add(carGroup);
+            return carGroup;
+        }
+
+        const carRed = createCar(0xff0000);
+        carRed.position.set(0, 0, 15);
+
+        const carBlue = createCar(0x0055ff);
+        carBlue.position.set(0, 0, -15);
+        carBlue.rotation.y = Math.PI;
+
+        // Controles de Teclado
+        const keys = {};
+        window.addEventListener('keydown', (e) => keys[e.code] = true);
+        window.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        // Puntuación
+        let scoreRed = 0;
+        let scoreBlue = 0;
+
+        function resetPositions() {
+            ball.position.set(0, 1.2, 0);
+            ballVel.set(0, 0, 0);
+            carRed.position.set(0, 0, 15);
+            carRed.rotation.set(0, 0, 0);
+            carRed.userData.velocity.set(0,0,0);
+            
+            carBlue.position.set(0, 0, -15);
+            carBlue.rotation.y = Math.PI;
+            carBlue.userData.velocity.set(0,0,0);
+        }
+
+        function triggerGoal(team) {
+            if (team === 'red') scoreRed++;
+            if (team === 'blue') scoreBlue++;
+
+            document.getElementById('score-red').innerText = scoreRed;
+            document.getElementById('score-blue').innerText = scoreBlue;
+
+            const ann = document.getElementById('goal-announcement');
+            ann.style.display = 'block';
+            setTimeout(() => { ann.style.display = 'none'; }, 2000);
+
+            resetPositions();
+        }
+
+        // Habilidad Aleatoria
+        function applyRandomAbility(car) {
+            const abilities = ['speed', 'jump_boost', 'freeze'];
+            const chosen = abilities[Math.floor(Math.random() * abilities.length)];
+            car.userData.currentAbility = chosen;
+            car.userData.abilityTimer = 300; // Duración
+
+            if(chosen === 'speed') {
+                car.userData.speed = 0.6;
+            } else if(chosen === 'jump_boost') {
+                car.userData.jumpPower = 0.5;
+            }
+            console.log("Habilidad activada:", chosen);
+        }
+
+        // Bucle de Juego Principal
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // --- Control Carro Rojo (WASD + Espacio + Shift) ---
+            if (keys['KeyW']) carRed.translateZ(-carRed.userData.speed);
+            if (keys['KeyS']) carRed.translateZ(carRed.userData.speed);
+            if (keys['KeyA']) carRed.rotation.y += 0.04;
+            if (keys['KeyD']) carRed.rotation.y -= 0.04;
+            
+            // Salto y animación de rebote vertical
+            if (keys['Space'] && !carRed.userData.isJumping) {
+                carRed.userData.isJumping = true;
+                carRed.userData.jumpForce = 0.4;
+            }
+            if (carRed.userData.isJumping) {
+                carRed.position.y += carRed.userData.jumpForce;
+                carRed.userData.jumpForce -= 0.02; // Gravedad
+                if (carRed.position.y <= 0) {
+                    carRed.position.y = 0;
+                    carRed.userData.isJumping = false;
+                }
+            }
+            // Habilidad especial tecla 'KeyE'
+            if (keys['KeyE']) { applyRandomAbility(carRed); keys['KeyE'] = false; }
+
+
+            // --- Control Carro Azul (Flechas + NumPad0 + Enter) ---
+            if (keys['ArrowUp']) carBlue.translateZ(-carBlue.userData.speed);
+            if (keys['ArrowDown']) carBlue.translateZ(carBlue.userData.speed);
+            if (keys['ArrowLeft']) carBlue.rotation.y += 0.04;
+            if (keys['ArrowRight']) carBlue.rotation.y -= 0.04;
+
+            if (keys['Numpad0'] && !carBlue.userData.isJumping) {
+                carBlue.userData.isJumping = true;
+                carBlue.userData.jumpForce = 0.4;
+            }
+            if (carBlue.userData.isJumping) {
+                carBlue.position.y += carBlue.userData.jumpForce;
+                carBlue.userData.jumpForce -= 0.02;
+                if (carBlue.position.y <= 0) {
+                    carBlue.position.y = 0;
+                    carBlue.userData.isJumping = false;
+                }
+            }
+            if (keys['Enter']) { applyRandomAbility(carBlue); keys['Enter'] = false; }
+
+
+            // --- Movimiento y Física del Balón ---
+            ball.position.add(ballVel);
+            ballVel.multiplyScalar(0.98); // Fricción del suelo
+
+            // Colisiones del balón con paredes laterales
+            if (ball.position.x > fieldWidth / 2 || ball.position.x < -fieldWidth / 2) {
+                ballVel.x *= -1;
+            }
+            // Colisiones con el fondo (y arcos)
+            if (ball.position.z > fieldHeight) {
+                if (ball.position.x > -4 && ball.position.x < 4 && ball.position.y < 5) {
+                    triggerGoal('red'); // Gol para rojo
+                } else {
+                    ballVel.z *= -1;
+                }
+            }
+            if (ball.position.z < -fieldHeight) {
+                if (ball.position.x > -4 && ball.position.x < 4 && ball.position.y < 5) {
+                    triggerGoal('blue'); // Gol para azul
+                } else {
+                    ballVel.z *= -1;
+                }
+            }
+
+            // Colisión Carro Rojo <-> Balón
+            if (carRed.position.distanceTo(ball.position) < 2.5) {
+                const pushDir = new THREE.Vector3().subVectors(ball.position, carRed.position).normalize();
+                ballVel.copy(pushDir.multiplyScalar(0.6));
+            }
+
+            // Colisión Carro Azul <-> Balón
+            if (carBlue.position.distanceTo(ball.position) < 2.5) {
+                const pushDir = new THREE.Vector3().subVectors(ball.position, carBlue.position).normalize();
+                ballVel.copy(pushDir.multiplyScalar(0.6));
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Ajustar pantalla si cambia el tamaño de la ventana
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
